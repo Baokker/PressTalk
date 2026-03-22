@@ -5,7 +5,11 @@ macOS 语音输入工具
 """
 
 import sys
-from config import XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET, STT_BACKEND, DEEPSEEK_API_KEY
+from config import (
+    XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET,
+    VOLC_APP_ID, VOLC_ACCESS_KEY,
+    STT_BACKEND, DEEPSEEK_API_KEY,
+)
 from hotkey_listener import HotkeyListener
 from formatter import format_smart
 
@@ -45,6 +49,16 @@ def check_config():
         if missing:
             print(f"[错误] 缺少配置项：{', '.join(missing)}")
             print("请将 .env.example 复制为 .env 并填写 API 信息。")
+            sys.exit(1)
+    elif STT_BACKEND == "volcengine":
+        missing = []
+        if not VOLC_APP_ID:
+            missing.append("VOLC_APP_ID")
+        if not VOLC_ACCESS_KEY:
+            missing.append("VOLC_ACCESS_KEY")
+        if missing:
+            print(f"[错误] 缺少配置项：{', '.join(missing)}")
+            print("请在 .env 中填写火山引擎 ASR 的 AppID 和 Access Token。")
             sys.exit(1)
 
 
