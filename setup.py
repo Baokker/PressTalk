@@ -4,6 +4,10 @@ py2app 打包配置
 输出：dist/VoiceInput.app
 """
 
+import sys
+# modulegraph 扫描 numpy/openai 等复杂包的 AST 时会爆栈，调高限制
+sys.setrecursionlimit(10000)
+
 from setuptools import setup
 
 APP = ["app.py"]
