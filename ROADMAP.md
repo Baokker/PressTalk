@@ -57,15 +57,25 @@
 - 触发键自定义
 - 智能整理开关（当前已在菜单中实现）
 
-### 4.3 打包分发（`setup.py`）✅ 配置已就绪
+### 4.3 打包分发（`setup.py`）✅ 可用，待改善
 
+当前方式（可用）：
 ```bash
-pip install py2app
-python setup.py py2app   # 输出 dist/VoiceInput.app
+source .venv_build/bin/activate   # 用干净 venv 避免 Anaconda 依赖污染
+python setup.py py2app            # 输出 dist/VoiceInput.app
 ```
 
-将 `dist/VoiceInput.app` 拖入 Applications 即可，无需安装 Python。
-需将 `.env` 放在 `~/.voiceinput.env` 或打包时内嵌（待定）。
+已知问题：打包依赖本机 Anaconda 路径下的 dylib（libssl/libcrypto/libffi），
+换台电脑路径不同时 `setup.py` 里的 `frameworks` 列表需手动调整，不够优雅。
+
+### 4.4 打包流程标准化（低优先级）
+
+目标：一条命令在任意干净环境打包，无需手动维护 dylib 路径。
+
+方案方向：
+- 打包前用脚本自动探测所需 dylib 路径，动态写入 frameworks 列表
+- 或改用 `Briefcase`（BeeWare 项目），比 py2app 对非系统 Python 环境友好
+- 或提供 `build.sh`，自动创建 venv → 安装依赖 → 打包，一键完成
 
 ---
 
