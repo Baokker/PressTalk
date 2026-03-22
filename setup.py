@@ -15,7 +15,9 @@ sys.setrecursionlimit(10000)
 from setuptools import setup
 
 APP = ["app.py"]
-DATA_FILES = []
+DATA_FILES = [
+    ("", [".env"]),  # 打包进 Resources 根目录，供 config.py 的 load_dotenv 读取
+]
 OPTIONS = {
     "argv_emulation": False,
     "frameworks": [
