@@ -17,10 +17,11 @@ from transcriber import warmup
 from main import check_accessibility, check_config
 
 # 菜单栏状态图标
+# \uFE0E = 文本变体选择符，强制用文字模式渲染，避免彩色 emoji 缩小后失真
 _ICONS = {
-    "idle":         "🎙",
-    "recording":    "🔴",
-    "transcribing": "⏳",
+    "idle":         "🎙\uFE0E",
+    "recording":    "🔴\uFE0E",
+    "transcribing": "⏳\uFE0E",
     "done":         "✓",
 }
 
