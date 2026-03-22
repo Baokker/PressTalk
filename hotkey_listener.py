@@ -17,16 +17,22 @@ _PTT_KEYS = {keyboard.Key.alt_r, keyboard.Key.cmd_r}
 
 
 class HotkeyListener:
-    def __init__(self, formatter=None):
+    def __init__(self, formatter=None, on_state_change=None):
         """
-        formatter: 可选，接收转录文本并返回整理后文本的函数（智能整理模式）
+        formatter:        可选，接收转录文本并返回整理后文本的函数（智能整理模式）
+        on_state_change:  可选，状态变化回调 fn(state)，state ∈ {"recording","transcribing","done","idle"}
         """
         self._recorder = Recorder()
         self._formatter = formatter
+        self._on_state_change = on_state_change
         self._active_key = None   # 当前按住的 PTT 键
         self._listener = None
         self._processing = False
         self._lock = threading.Lock()
+
+    def _notify(self, state: str):
+        if self._on_state_change:
+            self._on_state_change(state)
 
     def start(self):
         print("语音输入已启动。")
@@ -48,6 +54,7 @@ class HotkeyListener:
             if self._active_key is not None or self._processing:
                 return
             self._active_key = key
+        self._notify("recording")
         self._recorder.start()
 
     def _on_release(self, key):
@@ -71,10 +78,12 @@ class HotkeyListener:
 
     def _process(self, audio: bytes, smart_mode: bool):
         try:
+            self._notify("transcribing")
             text = transcribe(audio)
 
             if not text.strip():
                 print("[未识别到有效语音]")
+                self._notify("idle")
                 return
 
             if smart_mode and self._formatter:
@@ -85,8 +94,10 @@ class HotkeyListener:
             else:
                 print(f"[识别结果] {text[:80]}{'...' if len(text) > 80 else ''}")
             inject(text)
+            self._notify("done")
         except Exception as e:
             print(f"[错误] {e}")
+            self._notify("idle")
         finally:
             with self._lock:
                 self._processing = False
