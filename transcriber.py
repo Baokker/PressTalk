@@ -38,17 +38,17 @@ XFYUN_WS_URL = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"
 CHUNK_SIZE = 1280  # 1280 字节 / 40ms（16kHz 16bit mono）
 
 # ── 火山引擎 ASR 常量 ──────────────────────────────────────────────────────
-VOLC_WS_URL     = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
-VOLC_RESOURCE_ID = "volc.bigasr.sauc.duration"
+VOLC_WS_URL      = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"
+VOLC_RESOURCE_ID = "volc.seedasr.sauc.duration"   # 豆包流式语音识别模型 1.0 小时版
 VOLC_CHUNK_SIZE  = 5120  # 5120 字节 = 160ms（16kHz 16bit mono）
 
-# 帧头字节 byte1（msg_type<<4 | flags）
-_VOLC_FULL_CLIENT   = 0x10  # Full client request, no-flag
-_VOLC_AUDIO_MID     = 0x20  # Audio-only, mid-stream
-_VOLC_AUDIO_LAST    = 0x22  # Audio-only, last packet
-# 帧头字节 byte2（serialization<<4 | compression）
-_VOLC_JSON_GZIP     = 0x11  # JSON + gzip
-_VOLC_RAW_GZIP      = 0x01  # raw bytes + gzip
+# 帧头 byte1（msg_type<<4 | flags）— 所有帧都携带 sequence number
+_VOLC_FULL_CLIENT_SEQ = 0x11  # Full client + POS_SEQUENCE (0b0001_0001)
+_VOLC_AUDIO_MID_SEQ   = 0x21  # Audio-only + POS_SEQUENCE (0b0010_0001)
+_VOLC_AUDIO_LAST_SEQ  = 0x23  # Audio-only + NEG_WITH_SEQUENCE (0b0010_0011)
+# 帧头 byte2（serialization<<4 | compression）
+_VOLC_JSON_GZIP = 0x11  # JSON + gzip
+_VOLC_RAW_GZIP  = 0x01  # raw bytes + gzip
 
 # 本地 Whisper 模型（懒加载，首次使用时初始化）
 _whisper_model = None
@@ -253,32 +253,65 @@ def _send_audio(ws, pcm_bytes: bytes, session_id: str):
 # 火山引擎豆包 ASR（Seed-ASR 2.0，enable_nonstream）
 # ──────────────────────────────────────────────
 
-def _volc_build_frame(byte1: int, byte2: int, payload: bytes) -> bytes:
-    """拼装火山引擎二进制帧：4字节头 + 4字节长度（大端）+ payload。"""
+def _volc_build_frame(byte1: int, byte2: int, seq: int, payload: bytes) -> bytes:
+    """拼装带 sequence number 的帧：4字节头 + 4字节 seq（有符号）+ 4字节长度 + payload。"""
     header = bytes([0x11, byte1, byte2, 0x00])
-    return header + struct.pack(">I", len(payload)) + payload
+    return header + struct.pack(">i", seq) + struct.pack(">I", len(payload)) + payload
 
 
 def _volc_parse_response(data: bytes) -> dict:
-    """解析服务器二进制帧，返回 JSON dict；错误帧直接 raise。"""
-    msg_type = (data[1] >> 4) & 0x0F
-    compress  = data[2] & 0x0F
+    """解析服务器二进制帧，返回 dict（含 is_last_package 字段）；错误帧直接 raise。
 
-    if msg_type == 0x0F:  # 错误帧：[4头][4 error_code][4 msg_size][msg]
-        code = struct.unpack(">I", data[4:8])[0]
-        size = struct.unpack(">I", data[8:12])[0]
-        msg  = data[12:12 + size].decode("utf-8", errors="replace")
+    帧布局（参考官方 demo ResponseParser）：
+      [header_size*4 字节头]
+      [可选：4字节 seq，当 flags & 0x01]
+      [可选：4字节 event，当 flags & 0x04]
+      [对 SERVER_FULL_RESPONSE：4字节 payload_size]
+      [payload]
+    flags & 0x02 → is_last_package
+    """
+    header_size  = data[0] & 0x0F          # 实际头大小 = header_size * 4 字节
+    msg_type     = (data[1] >> 4) & 0x0F
+    flags        = data[1] & 0x0F
+    compress     = data[2] & 0x0F
+    is_last      = bool(flags & 0x02)
+
+    payload = data[header_size * 4:]       # 跳过头部
+
+    # 提取可选 sequence number
+    sequence = 0
+    if flags & 0x01:
+        sequence = struct.unpack(">i", payload[:4])[0]
+        payload  = payload[4:]
+
+    # 提取可选 event（官方 demo 里有此分支）
+    if flags & 0x04:
+        payload = payload[4:]
+
+    if msg_type == 0x0F:  # 错误帧：[4 error_code][4 msg_size][msg]
+        code = struct.unpack(">i", payload[:4])[0]
+        size = struct.unpack(">I", payload[4:8])[0]
+        msg  = payload[8:8 + size].decode("utf-8", errors="replace")
         raise RuntimeError(f"火山引擎 ASR 服务端错误 {code}: {msg}")
 
-    payload_size = struct.unpack(">I", data[4:8])[0]
-    raw = data[8:8 + payload_size]
+    # SERVER_FULL_RESPONSE：[4 payload_size][payload]
+    if msg_type == 0x09:
+        payload_size = struct.unpack(">I", payload[:4])[0]
+        payload      = payload[4:4 + payload_size]
+
+    if not payload:
+        return {"is_last_package": is_last, "sequence": sequence, "code": 0}
+
     if compress == 0x01:
-        raw = gzip.decompress(raw)
-    return json.loads(raw.decode("utf-8"))
+        payload = gzip.decompress(payload)
+
+    result = json.loads(payload.decode("utf-8"))
+    result["is_last_package"] = is_last
+    return result
 
 
 def _transcribe_volcengine(pcm_bytes: bytes) -> str:
-    """调用火山引擎豆包 ASR（enable_nonstream=True），返回识别文本。"""
+    """调用火山引擎豆包 ASR（bigmodel_nostream），返回识别文本。"""
     result_holder = []
     done_event    = threading.Event()
     error_holder  = []
@@ -304,8 +337,8 @@ def _transcribe_volcengine(pcm_bytes: bytes) -> str:
             done_event.set()
             return
 
-        # sequence < 0 表示终态帧
-        if resp.get("sequence", 0) < 0:
+        # is_last_package 为 True 时取结果
+        if resp.get("is_last_package"):
             text = resp.get("result", {}).get("text", "")
             result_holder.append(text)
             done_event.set()
@@ -321,6 +354,7 @@ def _transcribe_volcengine(pcm_bytes: bytes) -> str:
         "X-Api-App-Key":     VOLC_APP_ID,
         "X-Api-Access-Key":  VOLC_ACCESS_KEY,
         "X-Api-Resource-Id": VOLC_RESOURCE_ID,
+        "X-Api-Connect-Id":  str(uuid.uuid4()),
     }
     ws_app = websocket.WebSocketApp(
         VOLC_WS_URL,
@@ -348,47 +382,43 @@ def _transcribe_volcengine(pcm_bytes: bytes) -> str:
 
 
 def _volc_send_audio(ws, pcm_bytes: bytes):
-    """发送首帧 JSON 配置，再分块发送音频，最后发末尾帧。"""
-    # 首帧：JSON 配置（gzip 压缩）
+    """发送首帧 JSON 配置，再分块发送音频，最后发末尾帧（全部携带 sequence number）。"""
+    seq = 1
+
+    # 首帧：JSON 配置（gzip 压缩，seq=1）
     params = {
-        "app": {
-            "appid":   VOLC_APP_ID,
-            "token":   VOLC_ACCESS_KEY,
-            "cluster": "volcasr",
-        },
         "user": {"uid": str(uuid.uuid4())},
         "audio": {
-            "format":      "pcm",
-            "sample_rate": SAMPLE_RATE,
-            "bits":        16,
-            "channel":     CHANNELS,
-            "codec":       "raw",
+            "format":  "pcm",
+            "rate":    SAMPLE_RATE,
+            "bits":    16,
+            "channel": CHANNELS,
+            "codec":   "raw",
         },
         "request": {
-            "reqid":            str(uuid.uuid4()),
-            "sequence":         1,
-            "nbest":            1,
-            "show_utterances":  False,
-            "result_type":      "full",
-            "enable_nonstream": True,
+            "model_name": "bigmodel",
+            "enable_itn":  True,
+            "enable_punc": True,
         },
     }
     payload = gzip.compress(json.dumps(params, ensure_ascii=False).encode("utf-8"))
-    ws.send(_volc_build_frame(_VOLC_FULL_CLIENT, _VOLC_JSON_GZIP, payload),
+    ws.send(_volc_build_frame(_VOLC_FULL_CLIENT_SEQ, _VOLC_JSON_GZIP, seq, payload),
             opcode=websocket.ABNF.OPCODE_BINARY)
+    seq += 1
 
-    # 音频帧
-    offset = 0
-    total  = len(pcm_bytes)
-    while offset < total:
-        chunk   = pcm_bytes[offset:offset + VOLC_CHUNK_SIZE]
-        offset += VOLC_CHUNK_SIZE
-        is_last = (offset >= total)
-        byte1   = _VOLC_AUDIO_LAST if is_last else _VOLC_AUDIO_MID
-        ws.send(_volc_build_frame(byte1, _VOLC_RAW_GZIP, gzip.compress(chunk)),
-                opcode=websocket.ABNF.OPCODE_BINARY)
+    # 音频帧（每块带递增 seq；最后一块 seq 取负值）
+    chunks = [pcm_bytes[i:i + VOLC_CHUNK_SIZE]
+              for i in range(0, max(len(pcm_bytes), 1), VOLC_CHUNK_SIZE)]
+    if not chunks:
+        chunks = [b""]
 
-    # 如果音频为空，补发一个空末尾帧
-    if total == 0:
-        ws.send(_volc_build_frame(_VOLC_AUDIO_LAST, _VOLC_RAW_GZIP, gzip.compress(b"")),
-                opcode=websocket.ABNF.OPCODE_BINARY)
+    for i, chunk in enumerate(chunks):
+        is_last = (i == len(chunks) - 1)
+        compressed = gzip.compress(chunk)
+        if is_last:
+            ws.send(_volc_build_frame(_VOLC_AUDIO_LAST_SEQ, _VOLC_RAW_GZIP, -seq, compressed),
+                    opcode=websocket.ABNF.OPCODE_BINARY)
+        else:
+            ws.send(_volc_build_frame(_VOLC_AUDIO_MID_SEQ, _VOLC_RAW_GZIP, seq, compressed),
+                    opcode=websocket.ABNF.OPCODE_BINARY)
+            seq += 1
