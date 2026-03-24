@@ -1,5 +1,7 @@
 # PressTalk
 
+![alt text](assets/image.gif)
+
 PressTalk 是一个原生 macOS 菜单栏语音输入工具。按住右 `Option` 说话，松开后自动转录并输入到当前光标位置；按住右 `Command` 时，会在转录后再经过 DeepSeek 做轻量整理。
 
 ![](assets/2026-03-24-10-01-41.png)
@@ -46,12 +48,15 @@ PressTalk 是一个原生 macOS 菜单栏语音输入工具。按住右 `Option`
 首次启动后，打开菜单栏中的“设置…”，填写：
 
 - 火山引擎 `App ID`
-- 火山引擎 `Access Key`
+- 火山引擎 `Access Key`（对应 `Access Token`）
 - DeepSeek API Key（可选）
 
 获取地址：
 
-- 火山引擎语音识别控制台：https://console.volcengine.com/speech/service/10038
+- 火山引擎语音识别控制台（新人免费20小时额度）：https://console.volcengine.com/speech/service/10038
+
+![](assets/2026-03-24-10-10-33.png)
+
 - DeepSeek API Keys：https://platform.deepseek.com/api_keys
 
 ## 构建
